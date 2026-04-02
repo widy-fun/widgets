@@ -3,6 +3,7 @@ name: Submodule Build (Sandboxed)
 on:
   pull_request_target:
     branches:
+      - main
       - master
 
 jobs:
@@ -49,9 +50,9 @@ jobs:
     needs: detect
     if: needs.detect.outputs.found == 'true'
 
-    # No permissions — read-only token, no secrets exposed
+    # contents: write needed for uploading zip to release
     permissions:
-      contents: read
+      contents: write
 
     # Hard timeout — prevent runaway builds
     timeout-minutes: 15
@@ -102,6 +103,28 @@ jobs:
             exit 1
           fi
 
+      - name: Read name and version from package.json
+        id: pkg
+        run: |
+          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
+          PKG_NAME=$(node -p "require('./$SUBMODULE/package.json').name")
+          PKG_VERSION=$(node -p "require('./$SUBMODULE/package.json').version")
+
+          # Validate — must be non-empty and contain no path separators
+          if [[ -z "$PKG_NAME" || "$PKG_NAME" == *"/"* || "$PKG_NAME" == *".."* ]]; then
+            echo "ERROR: Unsafe or empty package name: $PKG_NAME"
+            exit 1
+          fi
+          if [[ -z "$PKG_VERSION" || ! "$PKG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9] ]]; then
+            echo "ERROR: Invalid or empty package version: $PKG_VERSION"
+            exit 1
+          fi
+
+          echo "name=$PKG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$PKG_VERSION" >> $GITHUB_OUTPUT
+          echo "zip_name=${PKG_NAME}-${PKG_VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "Package: $PKG_NAME@$PKG_VERSION"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -114,7 +137,6 @@ jobs:
           # --no-audit: skip network call to npm audit registry
           npm ci --ignore-scripts --no-audit --no-fund
         env:
-          # Guarantee no tokens/secrets leak into this step
           NODE_AUTH_TOKEN: ""
           NPM_TOKEN: ""
           GITHUB_TOKEN: ""
@@ -124,15 +146,33 @@ jobs:
         run: npm run build:all
         env:
           NODE_ENV: production
-          # Explicitly clear all secrets
           NODE_AUTH_TOKEN: ""
           NPM_TOKEN: ""
           GITHUB_TOKEN: ""
 
-      - name: Upload build output (optional)
-        uses: actions/upload-artifact@v4
+      - name: Zip build output
+        run: |
+          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
+          ZIP_NAME="${{ steps.pkg.outputs.zip_name }}"
+
+          if [ ! -d "$SUBMODULE/dist" ]; then
+            echo "ERROR: dist/ folder not found after build"
+            exit 1
+          fi
+
+          cd "$SUBMODULE/dist"
+          zip -r "$GITHUB_WORKSPACE/$ZIP_NAME" .
+          echo "Created archive: $ZIP_NAME"
+
+      - name: Upload zip to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: submodule-build-${{ github.event.pull_request.number }}
-          path: ${{ needs.detect.outputs.submodule_path }}/dist
-          if-no-files-found: warn
-          retention-days: 3
+          # Creates a release named after the widget version, or updates if it exists
+          tag_name: ${{ steps.pkg.outputs.name }}-v${{ steps.pkg.outputs.version }}
+          name: "${{ steps.pkg.outputs.name }} v${{ steps.pkg.outputs.version }}"
+          draft: false
+          prerelease: false
+          files: ${{ steps.pkg.outputs.zip_name }}
+          body: |
+            Automated build from PR #${{ github.event.pull_request.number }}
+            Submodule: `${{ needs.detect.outputs.submodule_path }}`
