@@ -1,7 +1,7 @@
 name: Submodule build
 
 on:
-  pull_request_target:
+  pull_request:
     branches:
       - main
       - master
@@ -40,7 +40,7 @@ jobs:
 
       # No permissions — read-only token, no secrets exposed
       permissions:
-        contents: write
+        contents: read
 
       # Hard timeout — prevent runaway builds
       timeout-minutes: 15
@@ -118,20 +118,9 @@ jobs:
             NPM_TOKEN: ""
             GITHUB_TOKEN: ""
 
-        - name: Zip build output
-          working-directory: ${{ needs.detect.outputs.submodule_path }}
-          # Zips the 'dist' folder into a file named after the PR
-          run: zip -r submodule-build-${{ github.event.pull_request.number }}.zip dist/
-
-        - name: Upload zip to GitHub Release
-          uses: softprops/action-gh-release@v2
+        - name: Upload Artifact
+          uses: actions/upload-artifact@v4
           with:
-            # Ties the release to a specific tag, creating it if it doesn't exist
-            tag_name: pr-${{ github.event.pull_request.number }}
-            name: "PR #${{ github.event.pull_request.number }} - Submodule Build"
-            body: "Automated build output for the submodule updated in PR #${{ github.event.pull_request.number }}."
-            prerelease: true # Marks it as a pre-release (recommended for PR builds)
-            files: ${{ needs.detect.outputs.submodule_path }}/submodule-build-${{ github.event.pull_request.number }}.zip
-          env:
-            # We explicitly cleared this above, so we must provide it here to create the release
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            name: build-artifact # We will look for this name in the next workflow
+            path: ${{ needs.detect.outputs.submodule_path }}/dist
+            retention-days: 1
