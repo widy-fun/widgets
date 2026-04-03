@@ -1,183 +1,45 @@
-name: Submodule Build (Sandboxed)
+name: Detect Single Changed Submodule
 
 on:
-  pull_request_target:
-    branches:
-      - main
-      - master
+  pull_request:
+    paths:
+      - 'widgets/**'
 
 jobs:
-  # ─── Step 1: detect which submodule was added/changed ───────────────────────
-  detect:
-    name: Detect Changed Submodule
+  find-submodule:
     runs-on: ubuntu-latest
-    outputs:
-      submodule_path: ${{ steps.find.outputs.submodule_path }}
-      found: ${{ steps.find.outputs.found }}
-
     steps:
-      - name: Checkout base repo (no submodules, no fork code yet)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: false
-          # pull_request_target checks out BASE branch — safe, no fork code here
+          fetch-depth: 0 
 
-      - name: Find added or changed submodule under widgets/
-        id: find
+      - name: Get changed submodule
+        id: check
         run: |
-          if ! git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-head; then
-            echo "ERROR: Failed to fetch PR head"
-            echo "PR Number: ${{ github.event.pull_request.number }}"
-            git fetch --all -v
-            exit 1
-          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          # Find all Added (A) or Modified (M) files in widgets/
+          # We loop through them and stop at the first one that is a submodule (160000)
+          SUBMODULE_PATH=""
+          
+          for path in $(git diff --name-only --diff-filter=AM $BASE_SHA $HEAD_SHA -- 'widgets/*'); do
+            if git ls-tree "$HEAD_SHA" "$path" | grep -q "^160000"; then
+              SUBMODULE_PATH="$path"
+              break # Stop after finding the first one
+            fi
+          done
 
-          CHANGED=$(git diff origin/${{ github.base_ref }}...pr-head -- .gitmodules \
-            | grep '^\+\s*path\s*=' \
-            | sed 's/.*= *//' \
-            | tr -d '[:space:]' \
-            | grep '^widgets/')
-
-          if [ -z "$CHANGED" ]; then
-            echo "No new submodule detected under widgets/"
-            echo "found=false" >> $GITHUB_OUTPUT
+          if [ -z "$SUBMODULE_PATH" ]; then
+            echo "No submodule changes detected."
           else
-            echo "Detected submodule: $CHANGED"
-            echo "submodule_path=$CHANGED" >> $GITHUB_OUTPUT
-            echo "found=true" >> $GITHUB_OUTPUT
+            echo "Found submodule: $SUBMODULE_PATH"
+            echo "submodule_path=$SUBMODULE_PATH" >> $GITHUB_OUTPUT
           fi
 
-  # ─── Step 2: build in a locked-down sandbox ─────────────────────────────────
-  build:
-    name: Build (${{ needs.detect.outputs.submodule_path }})
-    runs-on: ubuntu-latest
-    needs: detect
-    if: needs.detect.outputs.found == 'true'
-
-    # contents: write needed for uploading zip to release
-    permissions:
-      contents: write
-
-    # Hard timeout — prevent runaway builds
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout PR head with submodules
-        uses: actions/checkout@v4
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          submodules: recursive
-          fetch-depth: 1
-
-      - name: Validate submodule path (no traversal attacks)
+      - name: Use the path
+        if: steps.check.outputs.submodule_path != ''
         run: |
-          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
-
-          # Block path traversal
-          if [[ "$SUBMODULE" == *".."* || "$SUBMODULE" == "/"* ]]; then
-            echo "ERROR: Invalid submodule path: $SUBMODULE"
-            exit 1
-          fi
-
-          # Must be inside widgets/ folder
-          if [[ "$SUBMODULE" != widgets/* ]]; then
-            echo "ERROR: Submodule is not under widgets/ folder: $SUBMODULE"
-            exit 1
-          fi
-
-          # Must exist in .gitmodules (already committed to repo)
-          if ! grep -q "path = $SUBMODULE" .gitmodules; then
-            echo "ERROR: Submodule not found in .gitmodules: $SUBMODULE"
-            exit 1
-          fi
-
-          # Must be an actual directory
-          if [ ! -d "$SUBMODULE" ]; then
-            echo "ERROR: Submodule directory does not exist: $SUBMODULE"
-            exit 1
-          fi
-
-          echo "Submodule path is valid: $SUBMODULE"
-
-      - name: Check package.json exists
-        run: |
-          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
-          if [ ! -f "$SUBMODULE/package.json" ]; then
-            echo "ERROR: No package.json found in $SUBMODULE"
-            exit 1
-          fi
-
-      - name: Read name and version from package.json
-        id: pkg
-        run: |
-          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
-          PKG_NAME=$(node -p "require('./$SUBMODULE/package.json').name")
-          PKG_VERSION=$(node -p "require('./$SUBMODULE/package.json').version")
-
-          # Validate — must be non-empty and contain no path separators
-          if [[ -z "$PKG_NAME" || "$PKG_NAME" == *"/"* || "$PKG_NAME" == *".."* ]]; then
-            echo "ERROR: Unsafe or empty package name: $PKG_NAME"
-            exit 1
-          fi
-          if [[ -z "$PKG_VERSION" || ! "$PKG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9] ]]; then
-            echo "ERROR: Invalid or empty package version: $PKG_VERSION"
-            exit 1
-          fi
-
-          echo "name=$PKG_NAME" >> $GITHUB_OUTPUT
-          echo "version=$PKG_VERSION" >> $GITHUB_OUTPUT
-          echo "zip_name=${PKG_NAME}-${PKG_VERSION}.zip" >> $GITHUB_OUTPUT
-          echo "Package: $PKG_NAME@$PKG_VERSION"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install dependencies (no scripts, offline-safe)
-        working-directory: ${{ needs.detect.outputs.submodule_path }}
-        run: |
-          # --ignore-scripts: blocks preinstall/postinstall hooks from running
-          # --no-audit: skip network call to npm audit registry
-          npm ci --ignore-scripts --no-audit --no-fund
-        env:
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
-          GITHUB_TOKEN: ""
-
-      - name: Build
-        working-directory: ${{ needs.detect.outputs.submodule_path }}
-        run: npm run build:all
-        env:
-          NODE_ENV: production
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
-          GITHUB_TOKEN: ""
-
-      - name: Zip build output
-        run: |
-          SUBMODULE="${{ needs.detect.outputs.submodule_path }}"
-          ZIP_NAME="${{ steps.pkg.outputs.zip_name }}"
-
-          if [ ! -d "$SUBMODULE/dist" ]; then
-            echo "ERROR: dist/ folder not found after build"
-            exit 1
-          fi
-
-          cd "$SUBMODULE/dist"
-          zip -r "$GITHUB_WORKSPACE/$ZIP_NAME" .
-          echo "Created archive: $ZIP_NAME"
-
-      - name: Upload zip to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          # Creates a release named after the widget version, or updates if it exists
-          tag_name: ${{ steps.pkg.outputs.name }}-v${{ steps.pkg.outputs.version }}
-          name: "${{ steps.pkg.outputs.name }} v${{ steps.pkg.outputs.version }}"
-          draft: false
-          prerelease: false
-          files: ${{ steps.pkg.outputs.zip_name }}
-          body: |
-            Automated build from PR #${{ github.event.pull_request.number }}
-            Submodule: `${{ needs.detect.outputs.submodule_path }}`
+          echo "Processing submodule: ${{ steps.check.outputs.submodule_path }}"
+          # Example: cd ${{ steps.check.outputs.submodule_path }} && do_something
