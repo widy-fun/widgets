@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0 
 
       - name: Get changed submodule
+        id: find
         run: |
           CHANGED=$(git diff --name-only origin/master...HEAD widgets/)
           if [ -z "$CHANGED" ]; then
