@@ -24,33 +24,33 @@ jobs:
           # pull_request_target checks out BASE branch — safe, no fork code here
 
       - name: Find added or changed submodule under widgets/
-  id: find
-  run: |
-    # Debug: print the PR number being used
-    echo "Fetching PR #${{ github.event.pull_request.number }}"
-    
-    # Add error handling for the fetch
-    if ! git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-head; then
-      echo "ERROR: Failed to fetch PR head"
-      echo "PR Number: ${{ github.event.pull_request.number }}"
-      git fetch --all -v
-      exit 1
-    fi
+        id: find
+        run: |
+          # Debug: print the PR number being used
+          echo "Fetching PR #${{ github.event.pull_request.number }}"
 
-    CHANGED=$(git diff origin/${{ github.base_ref }}...pr-head -- .gitmodules \
-      | grep '^\+\s*path\s*=' \
-      | sed 's/.*= *//' \
-      | tr -d '[:space:]' \
-      | grep '^widgets/')
+          # Add error handling for the fetch
+          if ! git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-head; then
+            echo "ERROR: Failed to fetch PR head"
+            echo "PR Number: ${{ github.event.pull_request.number }}"
+            git fetch --all -v
+            exit 1
+          fi
 
-    if [ -z "$CHANGED" ]; then
-      echo "No new submodule detected under widgets/"
-      echo "found=false" >> $GITHUB_OUTPUT
-    else
-      echo "Detected submodule: $CHANGED"
-      echo "submodule_path=$CHANGED" >> $GITHUB_OUTPUT
-      echo "found=true" >> $GITHUB_OUTPUT
-    fi
+          CHANGED=$(git diff origin/${{ github.base_ref }}...pr-head -- .gitmodules \
+            | grep '^\+\s*path\s*=' \
+            | sed 's/.*= *//' \
+            | tr -d '[:space:]' \
+            | grep '^widgets/')
+
+          if [ -z "$CHANGED" ]; then
+            echo "No new submodule detected under widgets/"
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "Detected submodule: $CHANGED"
+            echo "submodule_path=$CHANGED" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          fi
 
   # ─── Step 2: build in a locked-down sandbox ─────────────────────────────────
   build:
