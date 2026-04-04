@@ -37,6 +37,7 @@ jobs:
         run: bun install --frozen-lockfile    
 
       - name: Validate widget manifest
+        id: manifest
         env:
           WIDGET_PATH: ${{ github.workspace }}/widget
         run: bun run scripts/validateManifest.ts
@@ -44,16 +45,16 @@ jobs:
       - name: Update widgets
         env:
           WIDGET_PATH: ${{ github.workspace }}/widget
-          WIDGET_VERSION: ${{ needs.detect.outputs.widget_version }}
-          WIDGET_ID: ${{ needs.detect.outputs.widget_id }}
+          WIDGET_VERSION: ${{ steps.manifest.outputs.widget_version }}
+          WIDGET_ID: ${{ steps.manifest.outputs.widget_id }}
         run: bun run scripts/updateWidgets.ts
-        
+
       - name: Commit updated widgets.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add widgets.json
-          git commit -m "chore: update widgets.json for ${{ needs.detect.outputs.widget_id }}"
+          git commit -m "chore: update widgets.json for ${{ steps.manifest.outputs.widget_id }}"
           git push  
 
       # - name: Zip release artifact
