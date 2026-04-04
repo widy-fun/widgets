@@ -52,8 +52,8 @@ jobs:
         env:
           WIDGET_VERSION: ${{ needs.detect.outputs.widget_version }}
           WIDGET_ID: ${{ needs.detect.outputs.widget_id }}
-        run: zip -r "${WIDGET_ID}-${WIDGET_VERSION}.zip" .
-        
+        run: zip -r "${WIDGET_ID}-${WIDGET_VERSION}.zip" ${{ github.workspace }}/widget
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
