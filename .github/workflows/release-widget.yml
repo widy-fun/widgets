@@ -64,7 +64,7 @@ jobs:
     steps:
       - name: Download release asset
         run: |
-          gh release download widgets --pattern "widgets.json" --dir ./downloads
+          gh release download widgets --pattern "widgets.json" --dir ./downloads || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
