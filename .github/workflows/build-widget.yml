@@ -1,0 +1,161 @@
+name: Build widget
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      submodule_path: ${{ steps.find.outputs.submodule_path }}
+      found: ${{ steps.find.outputs.found }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0 
+
+      - name: Get changed submodule
+        id: find
+        run: |
+          CHANGED=$(git diff --name-only origin/master...HEAD widgets/ | head -n 1)
+          if [ -z "$CHANGED" ]; then
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No submodule changes detected."
+          else
+            echo "The following submodules were added or updated:"
+            echo "submodule_path=$CHANGED" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "$CHANGED"
+          fi
+
+      - name: Validate submodule path (no traversal attacks)
+        env:
+          SUBMODULE: ${{ steps.find.outputs.submodule_path }}
+        run: |
+          # Block path traversal
+          if [[ "$SUBMODULE" == *".."* || "$SUBMODULE" == "/"* ]]; then
+            echo "ERROR: Invalid submodule path: $SUBMODULE"
+            exit 1
+          fi
+          # Must be inside widgets/ folder
+          if [[ "$SUBMODULE" != widgets/* ]]; then
+            echo "ERROR: Submodule is not under widgets/ folder: $SUBMODULE"
+            exit 1
+          fi
+
+          # Must exist in .gitmodules (already committed to repo)
+          if ! grep -qF "path = $SUBMODULE" .gitmodules; then
+            echo "ERROR: Submodule not found in .gitmodules: $SUBMODULE"
+            exit 1
+          fi
+
+          # Must be an actual directory
+          if [ ! -d "$SUBMODULE" ]; then
+            echo "ERROR: Submodule directory does not exist: $SUBMODULE"
+            exit 1
+          fi
+
+          echo "Submodule path is valid: $SUBMODULE"
+    
+  build:
+      name: Build (${{ needs.detect.outputs.submodule_path }})
+      runs-on: ubuntu-latest
+      needs: detect
+      if: needs.detect.outputs.found == 'true'
+      permissions:
+        contents: read
+      timeout-minutes: 15
+      steps:
+      
+        - name: Checkout PR head with submodules
+          uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+          with:
+            ref: refs/pull/${{ github.event.pull_request.number }}/merge
+            submodules: recursive
+            fetch-depth: 1
+      
+        - name: Check package.json exists
+          env:
+            SUBMODULE: ${{ needs.detect.outputs.submodule_path }}
+          run: |
+            if [ ! -f "$SUBMODULE/package.json" ]; then
+              echo "ERROR: No package.json found in $SUBMODULE"
+              exit 1
+            fi
+
+        - name: Set up Node.js
+          uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+          with:
+            node-version: 20
+
+        - name: Install dependencies (no scripts, offline-safe)
+          working-directory: ${{ needs.detect.outputs.submodule_path }}
+          run: |
+            npm ci --ignore-scripts --no-audit --no-fund
+          env:
+            NODE_AUTH_TOKEN: ""
+            NPM_TOKEN: ""
+            GITHUB_TOKEN: ""
+
+        - name: Build
+          working-directory: ${{ needs.detect.outputs.submodule_path }}
+          run: npm run build
+          env:
+            NODE_ENV: production
+            NODE_AUTH_TOKEN: ""
+            NPM_TOKEN: ""
+            GITHUB_TOKEN: ""
+
+        - name: Check artifact size
+          env:
+            SUBMODULE: ${{ needs.detect.outputs.submodule_path }}
+          run: |
+            DIST="$SUBMODULE/dist"
+            
+            MAX_SIZE_MB=200
+            
+            if [ ! -d "$DIST" ]; then
+              echo "ERROR: dist directory not found"
+              exit 1
+            fi
+            
+            SIZE_KB=$(du -sk "$DIST" | cut -f1)
+            SIZE_MB=$(echo "scale=2; $SIZE_KB / 1024" | bc)
+            
+            echo "Artifact size: ${SIZE_MB}MB (limit: ${MAX_SIZE_MB}MB)"
+            
+            if [ "$SIZE_KB" -gt $((MAX_SIZE_MB * 1024)) ]; then
+              echo "ERROR: Artifact too large: ${SIZE_MB}MB > ${MAX_SIZE_MB}MB"
+              exit 1
+            fi
+            
+            echo "Size check passed"
+
+        - name: Check view/index.html exists
+          env:
+            INDEX_HTML_PATH: "${{ needs.detect.outputs.submodule_path }}/dist/view"
+          run: |
+            if [ ! -f "$INDEX_HTML_PATH/index.html" ]; then
+              echo "ERROR: No index.html found in $INDEX_HTML_PATH"
+              exit 1
+            fi
+
+        - name: Check control/index.html exists
+          env:
+            INDEX_HTML_PATH: "${{ needs.detect.outputs.submodule_path }}/dist/control"
+          run: |
+            if [ ! -f "$INDEX_HTML_PATH/index.html" ]; then
+              echo "ERROR: No index.html found in $INDEX_HTML_PATH"
+              exit 1
+            fi
+   
+
+        - name: Upload Artifact
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          with:
+            name: build-artifact 
+            path: ${{ needs.detect.outputs.submodule_path }}/dist
+            retention-days: 1
