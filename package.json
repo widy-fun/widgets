@@ -1,6 +1,6 @@
 {
   "name": "widy-widgets",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "",
   "homepage": "https://github.com/widy-fun/widgets#readme",
   "bugs": {
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@actions/core": "^3.0.0",
-    "@widy/sdk": "^1.0.7",
+    "@widy/sdk": "^1.0.42",
     "zod": "^4.3.6"
   }
 }
